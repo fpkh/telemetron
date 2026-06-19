@@ -44,9 +44,13 @@ You only need Docker (with `docker compose`) and Python 3.
 
 This one command does everything: starts Kafka and Postgres, waits for them to become
 healthy, downloads the Flink Kafka connector, creates the topics, builds a virtual
-environment, and launches the generator together with the Flink job. The first
-per-minute aggregates show up in the output after 1–2 minutes (the window closes on a
-watermark). Stop with `Ctrl+C`.
+environment, picks a Java 11/17 JDK for PyFlink, launches the generator and the Flink
+job, and brings up the live dashboard — opening it in your browser automatically. The
+first per-minute aggregates show up after 1–2 minutes (the window closes on a
+watermark). Stop everything with `Ctrl+C`.
+
+> Set the dashboard off with `DASHBOARD=0 ./run.sh`, or change its port with
+> `DASHBOARD_PORT`.
 
 To only prepare the environment without running: `./run.sh --setup`.
 
@@ -60,17 +64,31 @@ The same steps are available individually via `make` (see `make help`).
 
 ## Dashboard
 
-A live web dashboard for the output metrics:
+A live web dashboard for the output metrics. `./run.sh` starts it for you; to run it
+on its own:
 
 ```bash
 make dashboard      # then open http://localhost:8088
 ```
+
+![Telemetron dashboard](docs/dashboard.png)
 
 Browsers can't talk to Kafka directly, so `dashboard/server.py` reads the
 `agent_metrics` topic in the background, keeps recent aggregates in memory, and serves
 them to a page that refreshes every 3 seconds with two charts (average latency and
 median tool calls by agent type) plus a table of the latest values. No dependencies
 beyond `kafka-python`.
+
+**Filters.** Toggle agent types on/off with the chips (or use *all* / *none*), and
+narrow the time range with the **window** selector (last 15 / 30 / 60 min, or all). The
+status line shows how many records the current filter keeps. The filter state is also
+shareable through the URL, so you can link straight to a focused view:
+
+```
+http://localhost:8088/?window=15&show=Code%20assistant,RAG%20answer
+```
+
+![Filtered to three agent types over the last 15 minutes](docs/dashboard-filtered.png)
 
 To preview the dashboard without bringing up the whole pipeline:
 
@@ -153,7 +171,8 @@ telemetron/
 │   └── index.html          web page with charts (Chart.js)
 ├── tests/
 │   └── test_metrics.py     unit tests for avg/median and time labels
-└── scripts/                helper scripts (topics, seed, consume, jars)
+├── scripts/                helper scripts (topics, seed, consume, jars)
+└── docs/                   dashboard screenshots used in this README
 ```
 
 ## Configuration
@@ -162,6 +181,12 @@ Everything is in `.env` (created from `.env.example`): Kafka address, topic name
 Postgres credentials, generation rate, window size, and the watermark out-of-orderness
 bound. `GEN_DRY_RUN=1` makes the generator print events to the console instead of
 sending them to Kafka — handy for a quick check without any infrastructure.
+
+**Load.** `GEN_RATE_PER_SEC` controls the event rate (default `25`); the generator
+paces itself against a wall clock so the rate holds steady at higher throughput. The
+Flink job runs single-threaded (`FLINK_PARALLELISM=1`) — that keeps the event-time
+watermark advancing at modest rates, which is the right default here; bump it only if
+you push the rate high enough to need it.
 
 The A/B metrics (what to average, what to take the median of) are defined in
 `generator/agent_generator.py` under `AGENT_PROFILES`. You can change the pair (for

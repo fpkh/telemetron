@@ -80,7 +80,7 @@ def build_producer(broker):
 def main():
     broker = env("KAFKA_BROKER", "localhost:9092")
     topic = env("TOPIC_IN", "agent_events")
-    rate = float(env("GEN_RATE_PER_SEC", "1"))
+    rate = float(env("GEN_RATE_PER_SEC", "25"))
     dry_run = env("GEN_DRY_RUN", "0") == "1"
     interval = 1.0 / rate if rate > 0 else 1.0
 
@@ -90,10 +90,14 @@ def main():
     # newer one before an older one.
     buf = deque()
     sent = 0
+    flush_every = max(20, int(rate))  # flush + log roughly once per second
     mode = "DRY-RUN (stdout)" if dry_run else f"kafka://{broker} -> {topic}"
     print(f"[generator] start: {mode}, rate={rate}/s. Press Ctrl+C to stop.")
 
     try:
+        # Pace against an absolute clock so the rate stays accurate at high
+        # throughput instead of drifting by the per-iteration work time.
+        next_t = time.perf_counter()
         while True:
             buf.append(make_event(time.time()))
             # 30% chance to swap the last two — light out-of-order
@@ -108,10 +112,16 @@ def main():
                 producer.send(topic, key=key, value=ev)
 
             sent += 1
-            if sent % 20 == 0 and not dry_run:
+            if sent % flush_every == 0 and not dry_run:
                 producer.flush()
                 print(f"[generator] sent {sent} events")
-            time.sleep(interval)
+
+            next_t += interval
+            delay = next_t - time.perf_counter()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                next_t = time.perf_counter()  # fell behind — resync, don't burst
     except KeyboardInterrupt:
         print(f"\n[generator] stop, total sent: {sent}")
     finally:

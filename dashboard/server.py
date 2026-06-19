@@ -102,11 +102,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path.startswith("/data"):
+        path = self.path.split("?", 1)[0]  # ignore query string (e.g. /?show=...)
+        if path.startswith("/data"):
             with _lock:
                 payload = json.dumps({"status": _status, "rows": list(_data)}).encode("utf-8")
             self._send(200, payload, "application/json")
-        elif self.path == "/" or self.path.startswith("/index"):
+        elif path == "/" or path.startswith("/index"):
             with open(HTML_PATH, "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
         else:

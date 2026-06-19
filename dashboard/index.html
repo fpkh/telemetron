@@ -31,6 +31,26 @@
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; }
   .empty { color: #8b95a7; padding: 40px 0; text-align: center; }
+
+  /* Filter bar */
+  #filters { display: flex; gap: 28px; flex-wrap: wrap; align-items: center; padding: 14px 20px; }
+  .fgroup { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .flabel { color: #8b95a7; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+    border: 1px solid #2c3447; border-radius: 999px; font-size: 12px;
+    cursor: pointer; color: #e6e9ef; background: #1b2233; user-select: none;
+    transition: opacity .12s ease;
+  }
+  .chip .swatch { margin: 0; width: 9px; height: 9px; }
+  .chip.off { opacity: .35; }
+  .mini, select {
+    background: #1b2233; border: 1px solid #2c3447; color: #cdd3df;
+    border-radius: 6px; padding: 5px 9px; font-size: 12px; cursor: pointer;
+  }
+  .mini:hover { border-color: #3a4458; }
+  .sep { width: 1px; align-self: stretch; background: #222a3a; }
 </style>
 </head>
 <body>
@@ -41,6 +61,25 @@
 </header>
 
 <main>
+  <div class="card" id="filters">
+    <div class="fgroup">
+      <span class="flabel">Agent types</span>
+      <div id="typeChips" class="chips"></div>
+      <button id="allBtn" class="mini">all</button>
+      <button id="noneBtn" class="mini">none</button>
+    </div>
+    <div class="sep"></div>
+    <div class="fgroup">
+      <span class="flabel">Window</span>
+      <select id="windowSel">
+        <option value="15">last 15 min</option>
+        <option value="30" selected>last 30 min</option>
+        <option value="60">last 60 min</option>
+        <option value="0">all</option>
+      </select>
+    </div>
+  </div>
+
   <div class="card">
     <h2>Average latency (ms) by agent type — per minute</h2>
     <div class="chart-wrap"><canvas id="latencyChart"></canvas></div>
@@ -70,8 +109,54 @@ const PALETTE = ["#5b9bd5","#36c08a","#e0a458","#c97bd0","#d05858","#5ad0c4","#b
 const colorOf = {};
 function pick(name){ if(!(name in colorOf)) colorOf[name] = PALETTE[Object.keys(colorOf).length % PALETTE.length]; return colorOf[name]; }
 
+// ---- Filter state (persists across the 3s refresh) ----
+const hidden = new Set();   // agent types toggled off
+let windowMin = 30;         // 0 = all
+let knownTypes = [];        // every type seen so far, for stable chips
+
+// Optional initial state from the URL, so a filtered view is shareable:
+//   ?window=15&show=Code%20assistant,RAG%20answer
+const params = new URLSearchParams(location.search);
+if(params.has("window")){ const w = parseInt(params.get("window"), 10); if(!isNaN(w)) windowMin = w; }
+const showOnly = params.has("show") ? new Set(params.get("show").split(",").map(s => s.trim())) : null;
+
+function applyFilters(rows){
+  let out = rows;
+  if(windowMin > 0){
+    const times = [...new Set(rows.map(r => r.time))].sort();
+    const keep = new Set(times.slice(-windowMin));
+    out = out.filter(r => keep.has(r.time));
+  }
+  return out.filter(r => !hidden.has(r.type_name));
+}
+
+function syncChips(rows){
+  let changed = false;
+  rows.forEach(r => {
+    if(!knownTypes.includes(r.type_name)){
+      knownTypes.push(r.type_name); changed = true;
+      if(showOnly && !showOnly.has(r.type_name)) hidden.add(r.type_name);
+    }
+  });
+  if(changed){ knownTypes.sort(); renderChips(); }
+}
+
+function renderChips(){
+  const c = document.getElementById("typeChips");
+  c.innerHTML = knownTypes.map(t =>
+    `<span class="chip ${hidden.has(t) ? "off" : ""}" data-t="${t}">
+       <span class="swatch" style="background:${pick(t)}"></span>${t}</span>`).join("");
+  c.querySelectorAll(".chip").forEach(el => {
+    el.onclick = () => {
+      const t = el.dataset.t;
+      hidden.has(t) ? hidden.delete(t) : hidden.add(t);
+      renderChips(); refresh();
+    };
+  });
+}
+
 function buildSeries(rows, field){
-  const times = [...new Set(rows.map(r => r.time))];
+  const times = [...new Set(rows.map(r => r.time))].sort();
   const types = [...new Set(rows.map(r => r.type_name))];
   const map = {};
   types.forEach(t => map[t] = {});
@@ -109,16 +194,17 @@ const toolsChart = new Chart(document.getElementById("toolsChart"), {
   type: "line", data: { labels: [], datasets: [] }, options: baseOpts,
 });
 
-function renderStatus(s, n){
+function renderStatus(s, total, shown){
   const el = document.getElementById("status");
   const ok = s && s.connected;
   const label = s && s.demo ? "demo data" : (ok ? "connected to Kafka" : "waiting for Kafka…");
-  el.innerHTML = `<span class="dot ${ok ? "ok" : "off"}"></span>${label} · ${n} records`;
+  const counts = shown === total ? `${total} records` : `${shown} / ${total} records`;
+  el.innerHTML = `<span class="dot ${ok ? "ok" : "off"}"></span>${label} · ${counts}`;
 }
 
 function renderTable(rows){
   const tbody = document.querySelector("#latest tbody");
-  if(!rows.length){ tbody.innerHTML = '<tr><td colspan="4" class="empty">waiting for data…</td></tr>'; return; }
+  if(!rows.length){ tbody.innerHTML = '<tr><td colspan="4" class="empty">no data for the current filters</td></tr>'; return; }
   tbody.innerHTML = latestByType(rows).map(r => `
     <tr>
       <td><span class="swatch" style="background:${pick(r.type_name)}"></span>${r.type_name}</td>
@@ -132,16 +218,22 @@ async function refresh(){
   try{
     const resp = await fetch("/data");
     const { status, rows } = await resp.json();
-    renderStatus(status, rows.length);
-    if(rows.length){
-      const lat = buildSeries(rows, "avg_latency_ms");
-      latencyChart.data = lat; latencyChart.update("none");
-      const tc = buildSeries(rows, "median_tool_calls_count");
-      toolsChart.data = tc; toolsChart.update("none");
-    }
-    renderTable(rows);
+    syncChips(rows);
+    const filtered = applyFilters(rows);
+    renderStatus(status, rows.length, filtered.length);
+    const lat = buildSeries(filtered, "avg_latency_ms");
+    latencyChart.data = lat; latencyChart.update("none");
+    const tc = buildSeries(filtered, "median_tool_calls_count");
+    toolsChart.data = tc; toolsChart.update("none");
+    renderTable(filtered);
   }catch(e){ /* server unavailable — try again next tick */ }
 }
+
+const windowSel = document.getElementById("windowSel");
+windowSel.value = String(windowMin);                 // reflect URL / default
+document.getElementById("allBtn").onclick = () => { hidden.clear(); renderChips(); refresh(); };
+document.getElementById("noneBtn").onclick = () => { knownTypes.forEach(t => hidden.add(t)); renderChips(); refresh(); };
+windowSel.onchange = (e) => { windowMin = parseInt(e.target.value, 10); refresh(); };
 
 refresh();
 setInterval(refresh, 3000);
