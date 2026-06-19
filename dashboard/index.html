@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telemetron · AI agent monitoring</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0f1420; color: #e6e9ef;
+  }
+  header {
+    padding: 18px 24px; border-bottom: 1px solid #222a3a;
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header .sub { color: #8b95a7; font-size: 13px; }
+  #status { margin-left: auto; font-size: 13px; color: #8b95a7; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .dot.ok { background: #36c08a; } .dot.off { background: #d05858; }
+  main { padding: 24px; display: grid; gap: 24px; grid-template-columns: 1fr; max-width: 1200px; margin: 0 auto; }
+  .card { background: #151b29; border: 1px solid #222a3a; border-radius: 12px; padding: 18px 20px; }
+  .card h2 { font-size: 14px; margin: 0 0 14px; font-weight: 600; color: #cdd3df; }
+  .chart-wrap { position: relative; height: 340px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #222a3a; }
+  th { color: #8b95a7; font-weight: 500; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; }
+  .empty { color: #8b95a7; padding: 40px 0; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Telemetron — AI agent monitoring</h1>
+  <span class="sub">per-minute aggregates from the <code>agent_metrics</code> topic</span>
+  <span id="status"></span>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Average latency (ms) by agent type — per minute</h2>
+    <div class="chart-wrap"><canvas id="latencyChart"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h2>Median tool calls by agent type — per minute</h2>
+    <div class="chart-wrap"><canvas id="toolsChart"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h2>Latest values by type</h2>
+    <table id="latest">
+      <thead><tr>
+        <th>Agent type</th>
+        <th class="num">avg latency, ms</th>
+        <th class="num">median tool calls</th>
+        <th class="num">minute</th>
+      </tr></thead>
+      <tbody><tr><td colspan="4" class="empty">waiting for data…</td></tr></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const PALETTE = ["#5b9bd5","#36c08a","#e0a458","#c97bd0","#d05858","#5ad0c4","#b0c45b","#9b8cf0"];
+const colorOf = {};
+function pick(name){ if(!(name in colorOf)) colorOf[name] = PALETTE[Object.keys(colorOf).length % PALETTE.length]; return colorOf[name]; }
+
+function buildSeries(rows, field){
+  const times = [...new Set(rows.map(r => r.time))];
+  const types = [...new Set(rows.map(r => r.type_name))];
+  const map = {};
+  types.forEach(t => map[t] = {});
+  rows.forEach(r => { map[r.type_name][r.time] = r[field]; });
+  const datasets = types.map(t => ({
+    label: t,
+    data: times.map(tm => (tm in map[t] ? map[t][tm] : null)),
+    borderColor: pick(t),
+    backgroundColor: pick(t),
+    spanGaps: true, tension: 0.3, pointRadius: 2, borderWidth: 2,
+  }));
+  return { labels: times, datasets };
+}
+
+function latestByType(rows){
+  const last = {};
+  rows.forEach(r => { last[r.type_name] = r; });
+  return Object.values(last).sort((a,b)=> a.type_name.localeCompare(b.type_name));
+}
+
+const baseOpts = {
+  responsive: true, maintainAspectRatio: false,
+  interaction: { mode: "nearest", intersect: false },
+  scales: {
+    x: { grid: { color: "#222a3a" }, ticks: { color: "#8b95a7" } },
+    y: { grid: { color: "#222a3a" }, ticks: { color: "#8b95a7" }, beginAtZero: true },
+  },
+  plugins: { legend: { labels: { color: "#cdd3df", boxWidth: 12 } } },
+};
+
+const latencyChart = new Chart(document.getElementById("latencyChart"), {
+  type: "line", data: { labels: [], datasets: [] }, options: baseOpts,
+});
+const toolsChart = new Chart(document.getElementById("toolsChart"), {
+  type: "line", data: { labels: [], datasets: [] }, options: baseOpts,
+});
+
+function renderStatus(s, n){
+  const el = document.getElementById("status");
+  const ok = s && s.connected;
+  const label = s && s.demo ? "demo data" : (ok ? "connected to Kafka" : "waiting for Kafka…");
+  el.innerHTML = `<span class="dot ${ok ? "ok" : "off"}"></span>${label} · ${n} records`;
+}
+
+function renderTable(rows){
+  const tbody = document.querySelector("#latest tbody");
+  if(!rows.length){ tbody.innerHTML = '<tr><td colspan="4" class="empty">waiting for data…</td></tr>'; return; }
+  tbody.innerHTML = latestByType(rows).map(r => `
+    <tr>
+      <td><span class="swatch" style="background:${pick(r.type_name)}"></span>${r.type_name}</td>
+      <td class="num">${r.avg_latency_ms.toLocaleString("en-US")}</td>
+      <td class="num">${r.median_tool_calls_count}</td>
+      <td class="num">${r.time}</td>
+    </tr>`).join("");
+}
+
+async function refresh(){
+  try{
+    const resp = await fetch("/data");
+    const { status, rows } = await resp.json();
+    renderStatus(status, rows.length);
+    if(rows.length){
+      const lat = buildSeries(rows, "avg_latency_ms");
+      latencyChart.data = lat; latencyChart.update("none");
+      const tc = buildSeries(rows, "median_tool_calls_count");
+      toolsChart.data = tc; toolsChart.update("none");
+    }
+    renderTable(rows);
+  }catch(e){ /* server unavailable — try again next tick */ }
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

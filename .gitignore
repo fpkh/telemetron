@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Local config / secrets
+.env
+
+# Downloaded artifacts
+flink/jars/*.jar
+
+# Course slides — not part of the repo (kept locally only)
+*.pdf
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
