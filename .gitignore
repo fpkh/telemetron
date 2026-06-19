@@ -11,6 +11,10 @@ __pycache__/
 # Downloaded artifacts
 flink/jars/*.jar
 
+# Runtime logs
+.dashboard.log
+.run.log
+
 # Course slides — not part of the repo (kept locally only)
 *.pdf
 

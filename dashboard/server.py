@@ -33,7 +33,13 @@ HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html
 
 
 def consume_loop():
+    import os
+
     from kafka import KafkaConsumer
+
+    # Fresh group per process so every start replays the full backlog from
+    # earliest (a shared committed group would skip already-consumed aggregates).
+    group = os.environ.get("DASHBOARD_GROUP", f"dashboard-{os.getpid()}")
 
     while True:
         try:
@@ -41,10 +47,11 @@ def consume_loop():
                 TOPIC,
                 bootstrap_servers=[BROKER],
                 auto_offset_reset="earliest",
-                enable_auto_commit=True,
-                group_id="dashboard",
+                enable_auto_commit=False,
+                group_id=group,
                 value_deserializer=lambda b: json.loads(b.decode("utf-8")),
-                consumer_timeout_ms=0,
+                # No consumer_timeout_ms: block on the iterator and tail the topic
+                # forever. (0 made it stop before the group even finished joining.)
             )
             with _lock:
                 _status["connected"] = True

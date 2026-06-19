@@ -21,7 +21,7 @@ import os
 
 from metrics import compute_window_metrics, iso_to_epoch_ms
 
-from pyflink.common import Configuration, Duration, Types, WatermarkStrategy, Time
+from pyflink.common import Configuration, Duration, Types, WatermarkStrategy, Time, Row
 from pyflink.common.watermark_strategy import TimestampAssigner
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.datastream import StreamExecutionEnvironment
@@ -76,7 +76,9 @@ class ParseJson(MapFunction):
     def map(self, value):
         try:
             d = json.loads(value)
-            return (
+            # Must be a Row (not a tuple): output_type is ROW_NAMED, and PyFlink's
+            # row coder calls get_fields_by_names() on the emitted value.
+            return Row(
                 int(d["type_id"]),
                 iso_to_epoch_ms(d["event_time"]),
                 int(d["latency_ms"]),
@@ -84,7 +86,7 @@ class ParseJson(MapFunction):
             )
         except Exception:
             # mark malformed messages with type_id=-1, filtered out below
-            return (-1, 0, -1, -1)
+            return Row(-1, 0, -1, -1)
 
 
 class EventTimeAssigner(TimestampAssigner):
@@ -114,7 +116,7 @@ class EnrichWithAgentType(MapFunction):
     def map(self, value):
         type_id, event_ts, latency_ms, tool_calls = value
         type_name = self.lookup.get(type_id)  # None -> filtered out
-        return (type_id, type_name, event_ts, latency_ms, tool_calls)
+        return Row(type_id, type_name, event_ts, latency_ms, tool_calls)
 
 
 class DropUnknownType(FilterFunction):
@@ -176,8 +178,15 @@ def main():
     jar_path = os.path.abspath(KAFKA_JAR)
     e.add_jars(f"file://{jar_path}")
 
+    # Parallelism 1: at ~1 event/sec spread over 24 partitions, parallel subtasks
+    # go idle and the keyed-window watermark (the MIN across inputs) freezes, so
+    # windows never fire. Single parallelism keeps the watermark advancing. The
+    # idleness guard is belt-and-suspenders for momentary gaps in the stream.
+    e.set_parallelism(int(env("FLINK_PARALLELISM", "1")))
+
     watermark = (
         WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(MAX_OOO_SEC))
+        .with_idleness(Duration.of_seconds(5))
         .with_timestamp_assigner(EventTimeAssigner())
     )
 
