@@ -14,8 +14,12 @@ def iso_to_epoch_ms(s: str) -> int:
 
 
 def window_time_label(window_start_ms: int) -> str:
-    """Window start (epoch ms) -> 'hh:mm' in UTC."""
-    return datetime.fromtimestamp(window_start_ms / 1000, tz=timezone.utc).strftime("%H:%M")
+    """Window start (epoch ms) -> 'hh:mm' in the local system timezone.
+
+    The epoch ms is an absolute instant; we render it in local time so the
+    dashboard labels match the wall clock of whoever is running this.
+    """
+    return datetime.fromtimestamp(window_start_ms / 1000).strftime("%H:%M")
 
 
 def compute_window_metrics(type_name, latencies, tool_calls, window_start_ms) -> dict:
